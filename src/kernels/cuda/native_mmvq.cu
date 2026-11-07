@@ -3761,6 +3761,7 @@ struct Il58Arch { int cc; const IlRows58* t; size_t n; };
 constexpr Il58Arch kIl58Arch[] = {
     {80, kIlRows58_80, sizeof(kIlRows58_80) / sizeof(IlRows58)},
     {120, kIlRows58_120, sizeof(kIlRows58_120) / sizeof(IlRows58)},
+    {121, kIlRows58_120, sizeof(kIlRows58_120) / sizeof(IlRows58)},   // DGX Spark GB10 (48-SM sm_121 Blackwell)
     {1201, kIlRows58_120, sizeof(kIlRows58_120) / sizeof(IlRows58)},   // a 12.0 card with 80+ SMs (il_cc)
 };
 // One column: rows a warp by n_out class, 0 = native_mmvq's single-column kernels (STRATA_MMVQ_IL_T1=0 turns this off).

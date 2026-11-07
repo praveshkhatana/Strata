@@ -1377,7 +1377,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
     const int tb_[2] = {0, (T + 1) / 2}, te_[2] = {G == 2 ? (T + 1) / 2 : T, T};
     // S26 STRATA_LFUSE=1: where the shared expert's gate / scale fusions apply (the paths they replace are the ones taken)
     auto lfuse_on = [&](int n) {
-        return g_lfuse() && ar_on() && native_moe_combine_enabled() && dec_batch && n > 1 && n <= 8 &&
+        return g_lfuse() && ar_on() && native_moe_combine_enabled() && dec_batch && n > 1 && n <= strata::kernels::kVerifyMaxT &&
                shared_expert_native_bf16_enabled();
     };
     bool sg_gated_[2] = {false, false};   // per group: the combine applies the shared gate
@@ -2446,7 +2446,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             }
             // 143-amdk: the add of the GPU's hit rows is done by the combine that follows (one launch fewer)
             hits_in_combine = fuse_hits_on() && !prof_on_ && !remote_opt_ && !sg_gated_[grp] && dec_batch && n > 1 &&
-                              native_moe_combine_enabled() && n <= 8 &&
+                              native_moe_combine_enabled() && n <= strata::kernels::kVerifyMaxT &&
                               native_moe_combine_hits_supported(parts_ + (size_t) tb * K * N, shared_ + tb * N, bo_ + tb * N, N, K, n);
             strata::dispatch::notef("experts layer: cpu rows via %ld (1 = fused wait+copy, 0 = wait then copy), hits in combine=%ld", (long) (fuse_rows_on() && !prof_on_ && !remote_opt_ && dec_batch && m_bal_ == nullptr), (long) hits_in_combine);
             if (!hits_in_combine) moe_hit_add(parts_out, hit_out, p_dst, p_counts + 1, cap, N, cs);

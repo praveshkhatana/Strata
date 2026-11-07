@@ -6840,7 +6840,8 @@ int main(int argc, char** argv) {
     // only after this point, at the verifiers' init, and the plain value must stay what it was there.
     auto batch_max_t = [&]() -> int {
         // (--batch-mtp and STRATA_PIPED_MTP draft with the draft layer's kernels, built for the narrow window: their windows
-        // stay at most kVerifyNarrowT rows; only the plain batch windows are wide)
+        // stay at most kVerifyNarrowT rows; DFlash2 slot drafters gather at most kRows per slot and support kVerifyMaxT)
+        if (batch_df2_wanted && batch_mtp) return (int) strata::kernels::kVerifyMaxT;
         if (batch_mtp && !piped_mtp) return (int) strata::kernels::kVerifyNarrowT;
         const int plain = std::max(o.spec, std::min(o.batch, (int) strata::kernels::kVerifyMaxT));
         const int group_rows = (piped_mtp && o.batch_groups > 1 && o.batch > 0)
@@ -11330,7 +11331,7 @@ int main(int argc, char** argv) {
         // prompt-lookup window longer than that (--lookup-max-t) the other)
         const size_t kHistSlots = (size_t) kPenaltyWindowCap *
             (size_t) (o.lookup_max_t > (int) strata::kernels::kVerifyNarrowT ? strata::kernels::kVerifyLongT
-                      : o.batch > strata::kernels::kVerifyNarrowT ? strata::kernels::kVerifyMaxT : strata::kernels::kVerifyNarrowT);
+                      : (o.batch > strata::kernels::kVerifyNarrowT || batch_df2) ? strata::kernels::kVerifyMaxT : strata::kernels::kVerifyNarrowT);
         int32_t* d_hist = nullptr;
         std::vector<int32_t> hist_stage(kHistSlots, -1);
         const int hist_dev = last_st ? last_st->dev : -1;   // with the head: the last stage's device
@@ -11409,6 +11410,7 @@ int main(int argc, char** argv) {
             // never forms a window of 9..16 rows)
             // (STRATA_PIPED_MTP: per slot its token and up to pm_drafts proposals)
             const int hrows = piped_mtp ? std::max<int>(strata::kernels::kVerifyNarrowT, (1 + pm_drafts) * o.batch)
+                            : batch_df2 ? (int) strata::kernels::kVerifyMaxT
                             : !batch_mtp && o.batch_groups > 1 ? std::max<int>(strata::kernels::kVerifyNarrowT, o.batch)
                             : !batch_mtp ? std::max<int>(strata::kernels::kVerifyNarrowT,
                                                          std::min<int>(o.batch, strata::kernels::kVerifyMaxT))
@@ -11483,7 +11485,7 @@ int main(int argc, char** argv) {
                     gs.ver.set_remote_expert_opt(remote_opt.get());
                     // --batch-mtp: every stage runs the same 2-rows-per-slot windows as the first (up to kVerifyMaxT
                     // rows, the hand-off's size) and bounds its captured batch layouts like the first (below)
-                    if (batch_mtp) gs.ver.set_batch_graph_limit(64);
+                    if (batch_mtp) gs.ver.set_batch_graph_limit(batch_df2 ? 192 : 64);
                     // (STRATA_PIPED_MTP: a group's window is its one slot's token and proposals, at most --spec rows,
                     // so the stage keeps the windows it has without --batch-mtp - the solo path's too)
                     ok_s = gs.ver.init(gs.wt, g, gs.ss, vs, gs.head.loaded() ? &gs.head : nullptr, batch_max_t(), err);
@@ -11564,7 +11566,7 @@ int main(int argc, char** argv) {
         }
         ver.set_remote_expert_opt(remote_opt.get());
         if (pcie_balance() && n_stages == 1) ver.set_pcie_balance(&drive.d.pcie_model);
-        if (batch_mtp) ver.set_batch_graph_limit(64);   // --batch-mtp only: slot rotation makes many layouts (LRU); 0.1.39 keeps all
+        if (batch_mtp) ver.set_batch_graph_limit(batch_df2 ? 192 : 64);   // --batch-mtp only: slot rotation makes many layouts (LRU); 0.1.39 keeps all
 #if defined(STRATA_HAVE_DFLASH2)
         if (use_df2) ver.set_taps(df2.tap_layers());
         if (batch_df2) ver.set_batch_taps(true);
@@ -14489,8 +14491,8 @@ int main(int argc, char** argv) {
             static size_t next_slot = 0;
             // Each MTP slot uses two rows; rotate slots when more than four are active.
             int A = 0;
-            // (--batch-mtp: two rows a slot, at most kVerifyNarrowT; the plain windows hold up to kVerifyMaxT)
-            const int win_cap = batch_mtp ? (int) strata::kernels::kVerifyNarrowT : (int) strata::kernels::kVerifyMaxT;
+            // (--batch-mtp: two rows a slot, at most kVerifyNarrowT; DFlash2 and plain windows hold up to kVerifyMaxT)
+            const int win_cap = (batch_mtp && !batch_df2) ? (int) strata::kernels::kVerifyNarrowT : (int) strata::kernels::kVerifyMaxT;
             int nrow[strata::kernels::kVerifyMaxT] = {};   // the rows slot a (the a-th active) holds: its token and its drafts
             // DFlash2 slots: the rows beyond one a slot are SPARE; they carry the slots' drafts, shared evenly in slot order (so the layout of a window
             // depends on which slots are active, not on the drafts: the captured batch graphs are reused).  More slots than rows: no drafts, the slots
@@ -14501,14 +14503,51 @@ int main(int argc, char** argv) {
                 for (size_t b = 0; b < bs.size() && nact < (int) (sizeof act_ids / sizeof act_ids[0]); ++b)
                     if (bs[b].active) act_ids[nact++] = (int) b;
                 const int spare = std::max(0, win_cap - nact);
+                // Concurrency-aware uniform batch confidence gating for bandwidth-bound MoE (GB10 sm_121):
+                // Keeps CUDA graph layouts compact AND ensures every speculative step pays for its unique MoE expert reads.
+                const int conc_max = (nact >= 4) ? 2 : (nact == 3 ? 2 : (nact == 2 ? 3 : 5));
+                const int base_cap = nact > 0 ? std::min({spare / nact, (int) strata::core::Dflash2Drafter::kDrafts, df2_cap, conc_max}) : 0;
+                const int rem_slots = 0;
+                int uniform_u = base_cap;
+                bool use_rem = false;   // uniform row counts per active slot avoid asymmetric remainder graph shapes
+                if (df2_conf > 0.0 && nact >= 2) {
+                    double chains[64];
+                    for (int k = 0; k < nact; ++k) chains[k] = 1.0;
+                    int keep_u = 0;
+                    int ready_n = 0;
+                    for (int k = 0; k < nact; ++k) if (bs[(size_t) act_ids[k]].draft_ready) ++ready_n;
+                    while (keep_u < base_cap) {
+                        double sum_p = 0.0;
+                        for (int k = 0; k < nact; ++k) {
+                            const BSlot& q = bs[(size_t) act_ids[k]];
+                            if (q.draft_ready) {
+                                chains[k] *= (double) q.dprob[(size_t) keep_u];
+                                sum_p += chains[k];
+                            }
+                        }
+                        // Marginal MoE break-even threshold rises with concurrency and draft depth:
+                        double step_thr = df2_conf;
+                        if (nact >= 4) {
+                            step_thr = (keep_u == 0) ? std::max(df2_conf, 0.48) : std::max(df2_conf, 0.70);
+                        } else if (nact == 3) {
+                            step_thr = (keep_u == 0) ? std::max(df2_conf, 0.42) : std::max(df2_conf, 0.58);
+                        } else if (nact == 2) {
+                            step_thr = (keep_u == 0) ? std::max(df2_conf, 0.38) : (keep_u == 1 ? std::max(df2_conf, 0.46) : std::max(df2_conf, 0.56));
+                        }
+                        if (ready_n == 0 || (sum_p / (double) ready_n) < step_thr) break;
+                        ++keep_u;
+                    }
+                    uniform_u = keep_u;
+                }
                 for (int k = 0; k < nact && nact > 0; ++k) {
                     const BSlot& q = bs[(size_t) act_ids[k]];
-                    int want = spare / nact + (k < spare % nact ? 1 : 0);
+                    int want = (nact >= 2) ? (uniform_u + (use_rem && k < rem_slots ? 1 : 0))
+                                           : (spare / nact + (k < spare % nact ? 1 : 0));
                     want = std::min(want, (int) strata::core::Dflash2Drafter::kDrafts);
                     want = std::min<int>(want, (int) std::max<int64_t>(0, q.max_new - q.produced - 1));
                     want = std::min<int>(want, (int) std::max<int64_t>(0, (int64_t) o.max_context - q.p - 2));
                     want = std::min(want, df2_cap);
-                    if (q.draft_ready && df2_conf > 0.0) {   // a draft row is worth its cost where the chain so far is likely: the product of the selector's probabilities
+                    if (nact == 1 && q.draft_ready && df2_conf > 0.0) {
                         double chain = 1.0;
                         int keep_n = 0;
                         while (keep_n < want && (chain *= (double) q.dprob[(size_t) keep_n]) >= df2_conf) ++keep_n;
@@ -14543,8 +14582,18 @@ int main(int argc, char** argv) {
                 }
 #endif
             }
+            int total_active = 0, total_df2_rows = 0;
+            if (batch_df2) {
+                for (size_t b = 0; b < bs.size(); ++b) {
+                    if (!bs[b].active) continue;
+                    ++total_active;
+                    total_df2_rows += 1 + (b < (sizeof df2_extra / sizeof df2_extra[0]) ? df2_extra[b] : 0);
+                }
+            }
+            const bool df2_all_fit = batch_df2 && total_df2_rows <= win_cap;
+            const size_t start_slot = df2_all_fit ? 0 : next_slot;
             for (size_t offset = 0; offset < bs.size(); ++offset) {
-                const int b = (int) ((next_slot + offset) % bs.size());
+                const int b = (int) ((start_slot + offset) % bs.size());
                 if (!bs[(size_t) b].active) continue;
                 const int extra = batch_df2 ? (b < (int) (sizeof df2_extra / sizeof df2_extra[0]) ? df2_extra[b] : 0) : batch_mtp ? 1 : 0;
                 if (S + 1 + extra > win_cap) break;
@@ -14567,7 +14616,7 @@ int main(int argc, char** argv) {
                     ++S;
                 }
             }
-            if (batch_mtp && A > 0) next_slot = ((size_t) active[A - 1] + 1) % bs.size();
+            if (batch_mtp && A > 0 && !(df2_all_fit && A == total_active)) next_slot = ((size_t) active[A - 1] + 1) % bs.size();
             if (S == 0) return true;
             const bool was_busy = strata::core::progress().busy.load();
             strata::core::progress().busy.store(true);
@@ -14698,7 +14747,7 @@ int main(int argc, char** argv) {
                     int32_t dd[strata::core::Dflash2Drafter::kDrafts];
                     float pp[strata::core::Dflash2Drafter::kDrafts];
                     d.note_rows(tok + first[t], kp, pos[first[t]]);
-                    if (nrow[t] > 1 || !batch_df2_defer) {
+                    if (nrow[t] > 1 || !batch_df2_defer || win_cap >= 2 * A) {
                         // this window carried drafts for the slot: its drafter takes the committed rows' taps and drafts again
                         if (d.has_deferred() && !d.catch_up(pos[first[t]], err)) {
                             std::printf("ERR batch DFlash2 slot %d: %s\n", b, err.c_str());
