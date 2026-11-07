@@ -427,7 +427,7 @@ def tuned_applies(backend: str | None, model_name: str | None, archs: Any = None
     if entry.where == "arc_a":
         return arch == "arc_a"
     if entry.where == "resident":
-        if arch == "sm_121":
+        if arch in ("sm_121", "sm_89"):
             return True
         slots = slots_of(list(args or []), vram_mib)
         return slots is not None and slots >= CONF_STEPS[0][0]
