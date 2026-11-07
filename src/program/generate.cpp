@@ -12197,6 +12197,7 @@ int main(int argc, char** argv) {
                 size_t evicted = 0;
                 std::optional<strata::core::HostMemoryReading> mem;
                 auto admit = [&] {
+                    if (floor == 0) return true;
                     mem = strata::core::sample_host_memory();
                     return strata::core::conversation_memory_admit(
                         mem ? std::optional<uint64_t>(mem->available) : std::nullopt, additional, floor);
@@ -12253,7 +12254,7 @@ int main(int argc, char** argv) {
                     image.stage_images.push_back(std::move(part));
                 }
                 const auto mem_after = strata::core::sample_host_memory();
-                if (!strata::core::conversation_memory_admit(
+                if (floor > 0 && !strata::core::conversation_memory_admit(
                         mem_after ? std::optional<uint64_t>(mem_after->available) : std::nullopt, 0, floor)) {
                     std::fprintf(stderr, "strata serve: conversation cache: skip parking (RAM floor after capture: %lld MiB needed, %s)\n",
                                  (long long) o.conversation_cache_min_free_mib, ram_note(mem_after).c_str());
@@ -14505,7 +14506,7 @@ int main(int argc, char** argv) {
                 const int spare = std::max(0, win_cap - nact);
                 // Concurrency-aware uniform batch confidence gating for bandwidth-bound MoE (GB10 sm_121):
                 // Keeps CUDA graph layouts compact AND ensures every speculative step pays for its unique MoE expert reads.
-                const int conc_max = (nact >= 4) ? 2 : (nact == 3 ? 2 : (nact == 2 ? 3 : 5));
+                const int conc_max = (nact >= 4) ? 2 : (nact == 3 ? 3 : (nact == 2 ? 4 : 5));
                 const int base_cap = nact > 0 ? std::min({spare / nact, (int) strata::core::Dflash2Drafter::kDrafts, df2_cap, conc_max}) : 0;
                 const int rem_slots = 0;
                 int uniform_u = base_cap;
@@ -14530,7 +14531,7 @@ int main(int argc, char** argv) {
                         if (nact >= 4) {
                             step_thr = (keep_u == 0) ? std::max(df2_conf, 0.48) : std::max(df2_conf, 0.70);
                         } else if (nact == 3) {
-                            step_thr = (keep_u == 0) ? std::max(df2_conf, 0.42) : std::max(df2_conf, 0.58);
+                            step_thr = (keep_u == 0) ? std::max(df2_conf, 0.45) : (keep_u == 1 ? std::max(df2_conf, 0.60) : std::max(df2_conf, 0.72));
                         } else if (nact == 2) {
                             step_thr = (keep_u == 0) ? std::max(df2_conf, 0.38) : (keep_u == 1 ? std::max(df2_conf, 0.46) : std::max(df2_conf, 0.56));
                         }

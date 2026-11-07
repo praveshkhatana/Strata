@@ -3760,6 +3760,7 @@ constexpr IlRows58 kIlRows58_80[] = {   // CMP 170HX, as kIlRows_80
 struct Il58Arch { int cc; const IlRows58* t; size_t n; };
 constexpr Il58Arch kIl58Arch[] = {
     {80, kIlRows58_80, sizeof(kIlRows58_80) / sizeof(IlRows58)},
+    {89, kIlRows58_120, sizeof(kIlRows58_120) / sizeof(IlRows58)},    // RTX 4090 Ada sm_89
     {120, kIlRows58_120, sizeof(kIlRows58_120) / sizeof(IlRows58)},
     {121, kIlRows58_120, sizeof(kIlRows58_120) / sizeof(IlRows58)},   // DGX Spark GB10 (48-SM sm_121 Blackwell)
     {1201, kIlRows58_120, sizeof(kIlRows58_120) / sizeof(IlRows58)},   // a 12.0 card with 80+ SMs (il_cc)

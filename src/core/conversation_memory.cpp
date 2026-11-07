@@ -286,7 +286,7 @@ std::optional<HostMemoryReading> sample_host_memory() {
     status.dwLength = sizeof status;
     // #1607: the commit limit (RAM + page file) refuses an allocation while physical RAM is still free
     if (!GlobalMemoryStatusEx(&status)) return {};
-    return combine(std::min<uint64_t>(status.ullAvailPhys, status.ullAvailPageFile), status.ullTotalPhys, CgroupScan{}, memory_limit_bytes());
+    return combine(status.ullAvailPageFile, status.ullTotalPhys, CgroupScan{}, memory_limit_bytes());
 #elif defined(__linux__)
     return sample_host_memory(MemoryProbePaths{}, memory_limit_bytes());
 #elif defined(__APPLE__)

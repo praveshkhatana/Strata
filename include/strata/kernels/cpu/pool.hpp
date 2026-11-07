@@ -402,7 +402,12 @@ private:
     std::vector<int> slice_threads_;  // threads draining each slice (the host counted in its own)
     int64_t pub_ns_ = 0;              // the current mode-5/6 phase's publish time (host only)
     double slice_ms_[2] = {0.0, 0.0}; // accumulated per-slice drain time (host only)
-    bool numa_phase() const { return numa_n_ > 0 && mode_ >= 5; }
+    struct QuantTask {
+        int e = 0;
+        int t = 0;
+    };
+    std::vector<QuantTask> quant_tasks_;
+    bool numa_phase() const { return numa_n_ > 0 && (mode_ == 5 || mode_ == 6); }
     /// The claim of `claim()` on slice `slice`'s head: `base + i`, or -1.
     int claim_slice(uint32_t epoch, int slice);
     std::atomic<uint32_t>& parked_of(int id) { return numa_n_ > 0 ? nsync_[(size_t) wslice_[(size_t) id]].parked : parked_; }
