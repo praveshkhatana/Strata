@@ -488,7 +488,8 @@ bool fuse_hits_on() {
     }
     return per_dev[dev] == 2;
 #else
-    return false;
+    static const bool on = [] { const char* v = std::getenv("STRATA_FUSE_HITS"); return v != nullptr && std::atoi(v) != 0; }();
+    return on;
 #endif
 }
 
@@ -1377,7 +1378,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
     const int tb_[2] = {0, (T + 1) / 2}, te_[2] = {G == 2 ? (T + 1) / 2 : T, T};
     // S26 STRATA_LFUSE=1: where the shared expert's gate / scale fusions apply (the paths they replace are the ones taken)
     auto lfuse_on = [&](int n) {
-        return g_lfuse() && ar_on() && native_moe_combine_enabled() && dec_batch && n > 1 && n <= 8 &&
+        return g_lfuse() && ar_on() && native_moe_combine_enabled() && dec_batch && n > 1 && n <= strata::kernels::kVerifyMaxT &&
                shared_expert_native_bf16_enabled();
     };
     bool sg_gated_[2] = {false, false};   // per group: the combine applies the shared gate
@@ -2446,7 +2447,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             }
             // 143-amdk: the add of the GPU's hit rows is done by the combine that follows (one launch fewer)
             hits_in_combine = fuse_hits_on() && !prof_on_ && !remote_opt_ && !sg_gated_[grp] && dec_batch && n > 1 &&
-                              native_moe_combine_enabled() && n <= 8 &&
+                              native_moe_combine_enabled() && n <= strata::kernels::kVerifyMaxT &&
                               native_moe_combine_hits_supported(parts_ + (size_t) tb * K * N, shared_ + tb * N, bo_ + tb * N, N, K, n);
             strata::dispatch::notef("experts layer: cpu rows via %ld (1 = fused wait+copy, 0 = wait then copy), hits in combine=%ld", (long) (fuse_rows_on() && !prof_on_ && !remote_opt_ && dec_batch && m_bal_ == nullptr), (long) hits_in_combine);
             if (!hits_in_combine) moe_hit_add(parts_out, hit_out, p_dst, p_counts + 1, cap, N, cs);
@@ -4706,6 +4707,7 @@ bool Verifier::run_slot_rows(const int* rows, int S, const int32_t* tokens, cons
     const ModelGeometry& g = *g_;
     if (pre_launch_ && !pre_launch_(cs_, err)) return false;
     if (!stage_batch(rows, S, 0, tokens, pos, err)) return false;
+    if (h_bal_ != nullptr) std::memset(h_bal_, 0, (size_t) bal_p_.size() * 4 * 8);
     const cudaError_t le = cudaGraphLaunch(exec_bm_[bkey(rows, S, 0)], cs_);
     if (le != cudaSuccess) { err = std::string("verify: batch launch: ") + cudaGetErrorString(le); return false; }
     (void) cudaStreamQuery(cs_);
@@ -4777,6 +4779,13 @@ bool Verifier::run_slot_rows(const int* rows, int S, const int32_t* tokens, cons
         progress_tick();
         std::atomic_thread_fence(std::memory_order_seq_cst);
         strata_store_fence();
+        if (h_bal_ != nullptr) {
+            const size_t bi = (size_t) (k * 2);
+            bal_ok_[bi] = *(volatile uint32_t*) h_flagA_ == want;
+            bal_nc_[bi] = bal_ok_[bi] ? sink_.cpu_jobs : 0;
+            bal_np_[bi] = bal_ok_[bi] ? sink_.counts[2] : 0;
+            sink_.cpu_jobs = 0;
+        }
         if (*(volatile uint32_t*) h_flagA_ != want) {        // the pool did not publish a plan: an empty one
             sink_.counts[0] = 0;
             sink_.counts[1] = 0;
@@ -4788,12 +4797,14 @@ bool Verifier::run_slot_rows(const int* rows, int S, const int32_t* tokens, cons
             raise_flag_b_ordered(want);   // behind any copy still queued from an earlier layer
         }
         *flag = want;
+        if (h_bal_ != nullptr) bal_p_[(size_t) (k * 2)] = ms_since(b);
         ms_wait += std::chrono::duration<double, std::milli>(b - a).count();
         ms_pool += ms_since(b);
     }
     const cudaError_t se = cudaStreamSynchronize(cs_);
     if (se != cudaSuccess) { err = std::string("verify batch: ") + cudaGetErrorString(se); return false; }
     cudaStreamSynchronize(copy_);
+    if (h_bal_ != nullptr && !all_resident_ && !bal_paused_) pcie_balance_window(steps, 1);
     if (prof_on_) collect_profile();
     ++windows;
     if (le_ < g.n_layers) return next_ == nullptr || next_->run_slot_rows(rows, S, tokens, pos, pool, next_user_, out, err);

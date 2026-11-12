@@ -4846,7 +4846,7 @@ int main(int argc, char** argv) {
     // 16 workers: 12.2 either way.  One GPU, no batch slots, no --pcie-frac.
     auto pcie_balance = [&]() {
         const char* e = std::getenv("STRATA_PCIE_BALANCE");
-        return !pcie_given && native_pack && !multi_gpu && o.batch <= 0 && e != nullptr && std::strcmp(e, "1") == 0;
+        return !pcie_given && native_pack && !multi_gpu && e != nullptr && std::strcmp(e, "1") == 0;
     };
     // the canonical Q2_0 pack's CPU kernels are AVX-512 only; a native pack runs on AVX2 CPUs as well
     if (!native_pack) {
@@ -6938,7 +6938,8 @@ int main(int argc, char** argv) {
     // only after this point, at the verifiers' init, and the plain value must stay what it was there.
     auto batch_max_t = [&]() -> int {
         // (--batch-mtp and STRATA_PIPED_MTP draft with the draft layer's kernels, built for the narrow window: their windows
-        // stay at most kVerifyNarrowT rows; only the plain batch windows are wide)
+        // stay at most kVerifyNarrowT rows; DFlash2 slot drafters gather at most kRows per slot and support kVerifyMaxT)
+        if (batch_df2_wanted && batch_mtp) return (int) strata::kernels::kVerifyMaxT;
         if (batch_mtp && !piped_mtp) return (int) strata::kernels::kVerifyNarrowT;
         const int plain = std::max(o.spec, std::min(o.batch, (int) strata::kernels::kVerifyMaxT));
         const int group_rows = (piped_mtp && o.batch_groups > 1 && o.batch > 0)
@@ -11465,7 +11466,7 @@ int main(int argc, char** argv) {
         // prompt-lookup window longer than that (--lookup-max-t) the other)
         const size_t kHistSlots = (size_t) kPenaltyWindowCap *
             (size_t) (o.lookup_max_t > (int) strata::kernels::kVerifyNarrowT ? strata::kernels::kVerifyLongT
-                      : o.batch > strata::kernels::kVerifyNarrowT ? strata::kernels::kVerifyMaxT : strata::kernels::kVerifyNarrowT);
+                      : (o.batch > strata::kernels::kVerifyNarrowT || batch_df2) ? strata::kernels::kVerifyMaxT : strata::kernels::kVerifyNarrowT);
         int32_t* d_hist = nullptr;
         std::vector<int32_t> hist_stage(kHistSlots, -1);
         const int hist_dev = last_st ? last_st->dev : -1;   // with the head: the last stage's device
@@ -11544,6 +11545,7 @@ int main(int argc, char** argv) {
             // never forms a window of 9..16 rows)
             // (STRATA_PIPED_MTP: per slot its token and up to pm_drafts proposals)
             const int hrows = piped_mtp ? std::max<int>(strata::kernels::kVerifyNarrowT, (1 + pm_drafts) * o.batch)
+                            : batch_df2 ? (int) strata::kernels::kVerifyMaxT
                             : !batch_mtp && o.batch_groups > 1 ? std::max<int>(strata::kernels::kVerifyNarrowT, o.batch)
                             : !batch_mtp ? std::max<int>(strata::kernels::kVerifyNarrowT,
                                                          std::min<int>(o.batch, strata::kernels::kVerifyMaxT))
@@ -11618,7 +11620,7 @@ int main(int argc, char** argv) {
                     gs.ver.set_remote_expert_opt(remote_opt.get());
                     // --batch-mtp: every stage runs the same 2-rows-per-slot windows as the first (up to kVerifyMaxT
                     // rows, the hand-off's size) and bounds its captured batch layouts like the first (below)
-                    if (batch_mtp) gs.ver.set_batch_graph_limit(64);
+                    if (batch_mtp) gs.ver.set_batch_graph_limit(batch_df2 ? 192 : 64);
                     // (STRATA_PIPED_MTP: a group's window is its one slot's token and proposals, at most --spec rows,
                     // so the stage keeps the windows it has without --batch-mtp - the solo path's too)
                     ok_s = gs.ver.init(gs.wt, g, gs.ss, vs, gs.head.loaded() ? &gs.head : nullptr, batch_max_t(), err);
@@ -11699,7 +11701,7 @@ int main(int argc, char** argv) {
         }
         ver.set_remote_expert_opt(remote_opt.get());
         if (pcie_balance() && n_stages == 1) ver.set_pcie_balance(&drive.d.pcie_model);
-        if (batch_mtp) ver.set_batch_graph_limit(64);   // --batch-mtp only: slot rotation makes many layouts (LRU); 0.1.39 keeps all
+        if (batch_mtp) ver.set_batch_graph_limit(batch_df2 ? 192 : 64);   // --batch-mtp only: slot rotation makes many layouts (LRU); 0.1.39 keeps all
 #if defined(STRATA_HAVE_DFLASH2)
         if (use_df2) ver.set_taps(df2.tap_layers());
         if (batch_df2) ver.set_batch_taps(true);
@@ -12331,6 +12333,7 @@ int main(int argc, char** argv) {
                 size_t evicted = 0;
                 std::optional<strata::core::HostMemoryReading> mem;
                 auto admit = [&] {
+                    if (floor == 0) return true;
                     mem = strata::core::sample_host_memory();
                     return strata::core::conversation_memory_admit(
                         mem ? std::optional<uint64_t>(mem->available) : std::nullopt, additional, floor);
@@ -12390,7 +12393,7 @@ int main(int argc, char** argv) {
                     image.stage_images.push_back(std::move(part));
                 }
                 const auto mem_after = strata::core::sample_host_memory();
-                if (!strata::core::conversation_memory_admit(
+                if (floor > 0 && !strata::core::conversation_memory_admit(
                         mem_after ? std::optional<uint64_t>(mem_after->available) : std::nullopt, 0, floor)) {
                     std::fprintf(stderr, "strata serve: conversation cache: skip parking (RAM floor after capture: %lld MiB needed, %s)\n",
                                  (long long) o.conversation_cache_min_free_mib, ram_note(mem_after).c_str());
@@ -12869,7 +12872,7 @@ int main(int argc, char** argv) {
         if (o.adapt_every > 0 && o.adapt_swaps > 0 && !all_experts_resident)
             drive.d.usage.assign((size_t) (g.n_layers * g.n_expert), 0.0f);
         PcieAuto pcie_auto;
-        if (o.pcie_frac_auto && !all_experts_resident && o.batch == 0 && o.peer_device < 0 && (n_stages == 1 || pcie_auto_split_ok())) {
+        if (o.pcie_frac_auto && !all_experts_resident && o.peer_device < 0 && (n_stages == 1 || pcie_auto_split_ok())) {
             const auto& pl = strata::kernels::cpu::expert_layout();
             double sum = 0.0;
             for (int64_t l = 0; l < g.n_layers; ++l) sum += (double) pl.blob_bytes(l);
@@ -14628,8 +14631,8 @@ int main(int argc, char** argv) {
             static size_t next_slot = 0;
             // Each MTP slot uses two rows; rotate slots when more than four are active.
             int A = 0;
-            // (--batch-mtp: two rows a slot, at most kVerifyNarrowT; the plain windows hold up to kVerifyMaxT)
-            const int win_cap = batch_mtp ? (int) strata::kernels::kVerifyNarrowT : (int) strata::kernels::kVerifyMaxT;
+            // (--batch-mtp: two rows a slot, at most kVerifyNarrowT; DFlash2 and plain windows hold up to kVerifyMaxT)
+            const int win_cap = (batch_mtp && !batch_df2) ? (int) strata::kernels::kVerifyNarrowT : (int) strata::kernels::kVerifyMaxT;
             int nrow[strata::kernels::kVerifyMaxT] = {};   // the rows slot a (the a-th active) holds: its token and its drafts
             // DFlash2 slots: the rows beyond one a slot are SPARE; they carry the slots' drafts, shared evenly in slot order (so the layout of a window
             // depends on which slots are active, not on the drafts: the captured batch graphs are reused).  More slots than rows: no drafts, the slots
@@ -14682,8 +14685,18 @@ int main(int argc, char** argv) {
                 }
 #endif
             }
+            int total_active = 0, total_df2_rows = 0;
+            if (batch_df2) {
+                for (size_t b = 0; b < bs.size(); ++b) {
+                    if (!bs[b].active) continue;
+                    ++total_active;
+                    total_df2_rows += 1 + (b < (sizeof df2_extra / sizeof df2_extra[0]) ? df2_extra[b] : 0);
+                }
+            }
+            const bool df2_all_fit = batch_df2 && total_df2_rows <= win_cap;
+            const size_t start_slot = df2_all_fit ? 0 : next_slot;
             for (size_t offset = 0; offset < bs.size(); ++offset) {
-                const int b = (int) ((next_slot + offset) % bs.size());
+                const int b = (int) ((start_slot + offset) % bs.size());
                 if (!bs[(size_t) b].active) continue;
                 const int extra = batch_df2 ? (b < (int) (sizeof df2_extra / sizeof df2_extra[0]) ? df2_extra[b] : 0) : batch_mtp ? 1 : 0;
                 if (S + 1 + extra > win_cap) break;
@@ -14706,7 +14719,7 @@ int main(int argc, char** argv) {
                     ++S;
                 }
             }
-            if (batch_mtp && A > 0) next_slot = ((size_t) active[A - 1] + 1) % bs.size();
+            if (batch_mtp && A > 0 && !(df2_all_fit && A == total_active)) next_slot = ((size_t) active[A - 1] + 1) % bs.size();
             if (S == 0) return true;
             const bool was_busy = strata::core::progress().busy.load();
             strata::core::progress().busy.store(true);
@@ -14747,10 +14760,12 @@ int main(int argc, char** argv) {
                 ver.set_slot_history(rows[t], ps.ids.data() + from, (int64_t) ps.ids.size() - from);
             }
             const Clock::time_point w0 = Clock::now();
+            if (pcie_auto.on) pcie_auto.mark(drive.d.ms_run, drive.d.multi_misses);
             if (!ver.run_slot_rows(rows, S, tok, pos, win_pool_fn, win_pool_user, outb, err) || drive.d.failed) {
                 std::printf("ERR %s\n", drive.d.failed && drive.d.fail ? drive.d.fail : err.c_str());
                 return false;
             }
+            if (pcie_auto.on) { double batch_pf = o.pcie_frac; pcie_auto_step(batch_pf); }
             const Clock::time_point w1 = Clock::now();
             // The adaptive VRAM tier, as the solo loop runs it: every --adapt-every windows, on a thread beside the commit and
             // the drafts.  Every stage's window has finished here (run_slot_rows synchronised each stage's stream), and

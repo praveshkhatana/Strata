@@ -1212,6 +1212,15 @@ class OutputParser:
                 last = name.rsplit("__", 1)[1]
                 if last:
                     aliases.setdefault(last, set()).add(name)
+                if name.startswith("mcp__"):
+                    bare = name[5:]
+                    if bare:
+                        aliases.setdefault(bare, set()).add(name)
+                        aliases.setdefault(bare.replace("__", "_"), set()).add(name)
+                elif name.startswith("mcp_"):
+                    bare = name[4:]
+                    if bare:
+                        aliases.setdefault(bare, set()).add(name)
         # #4751: a programmatic-tool-calling harness (the DeepSeek Harness's PTC mode) shows the model its tools as `tools.write(...)`
         # inside code, and the model then writes the native call with that spelling (`tools.write`, also `functions.write`).  The
         # prefix is not part of the declared name; the same unambiguous-alias rule applies, an exactly declared name always wins.
