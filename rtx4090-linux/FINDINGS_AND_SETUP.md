@@ -11,7 +11,7 @@ Production setup, code modifications, kernel/hardware guardrails, and reproducib
 - **CPU**: Intel Core i9-14900K (24 cores / 32 threads: P-cores CPUs `0..15`, E-cores CPUs `16..31`)
   - P-cores capped to **`4.80 GHz`** (`4800000`) and E-cores to **`4.40 GHz`** (`4400000`) with `energy_performance_preference=performance` via `rtx4090-linux/systemd/intel-cpu-safe-cap.service`.
 - **RAM & Virtual Memory**: 64 GB (`62 GiB` usable) DDR5 + `32 GiB` NVMe swapfile (`/mnt/nvme/swapfile`, `sw,pri=10` in `/etc/fstab`) + `rtx4090-linux/systemd/99-ai-server-vm.conf` (`vm.swappiness=100`, `vm.vfs_cache_pressure=50`, `vm.page-cluster=0`).
-- **Optional Host Note (not auto-applied)**: Kernel boot cmdline currently runs without `iommu=pt` (`BOOT_IMAGE=/boot/vmlinuz-7.0.0-43-generic ... gpu_unlock.targets=0000:01:00.0`). Adding `iommu=pt` (while preserving `gpu_unlock.targets=0000:01:00.0`) can optionally reduce host IOMMU DMA overhead if desired.
+- **IOMMU Passthrough (`iommu=pt`)**: Enabled in both `/etc/default/grub` (`GRUB_CMDLINE_LINUX_DEFAULT="quiet splash iommu=pt"`) and `/etc/grub.d/40_custom` (`gnulinux-gpu-unlock-4090`, preserving `gpu_unlock.targets=0000:01:00.0`). Verified active post-reboot (`/sys/kernel/iommu_groups/*/type` switched from `DMA-FQ` to `identity`).
 
 ---
 
