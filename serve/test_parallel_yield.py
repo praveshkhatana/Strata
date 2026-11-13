@@ -338,6 +338,58 @@ class ParallelServiceYield(tp.FakeEngineCase):
             self.assertEqual(e._reap_orphan_slots(), [0])
             self.assertEqual(e.slot_busy, [False, True])
 
+    def test_parked_and_slow_bstop_slots_are_never_reaped(self):
+        """Regression for #1603/#1994 race: neither a parked slot nor one in the middle of sending BSTOP may be
+        reaped as an orphan, and an older park timer must not free a re-parked slot."""
+        self.start(2)
+        e = self.engine
+        e.ORPHAN_SLOT_S = 0.0
+        e.SLOT_PARK_S = 0.08
+        with e.slot_cv:
+            e.slot_busy[0] = True
+        e._park_slot(0)
+        with e.slot_cv:
+            self.assertEqual(e._reap_orphan_slots(), [])
+            self.assertTrue(e.slot_busy[0])
+        time.sleep(0.04)
+        e._park_slot(0)
+        time.sleep(0.05)                                # first timer fired by now; second timer still live
+        with e.slot_cv:
+            self.assertTrue(e.slot_busy[0])
+        time.sleep(0.06)                                # second timer fires
+        with e.slot_cv:
+            self.assertFalse(e.slot_busy[0])
+
+        orig_send = e._send
+        seen_during_send = {}
+        def slow_send(cmd):
+            with e.slot_cv:
+                seen_during_send["releasing"] = set(e.slot_releasing)
+                seen_during_send["claims"] = set(e.slot_claims)
+                seen_during_send["reaped"] = e._reap_orphan_slots()
+            return orig_send(cmd)
+        with e.slot_cv:
+            e.slot_busy[1] = True
+            e.slot_claims.add(1)
+        e._park_slot(1)                                 # cleared by release
+        with e.slot_cv:
+            e.slot_claims.add(1)
+        with mock.patch.object(e, "_send", side_effect=slow_send):
+            e._release_slot_when_done(1, None, e.gen)
+        self.assertIn(1, seen_during_send["releasing"])
+        self.assertNotIn(1, seen_during_send["claims"])
+        self.assertEqual(seen_during_send["reaped"], [])
+        e.slot_q[1].put("BDONE 1 0 ok")
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            with e.slot_cv:
+                if not e.slot_busy[1] and 1 not in e.slot_releasing:
+                    break
+            time.sleep(0.01)
+        with e.slot_cv:
+            self.assertFalse(e.slot_busy[1])
+            self.assertNotIn(1, e.slot_releasing)
+
     def test_a_parallel_request_does_not_wait_for_the_fifo_on_a_loaded_engine(self):
         """#1603: parallel requests used to take the FIFO (held by an image encode, /v1/vram, load) just to find the
         engine loaded; between 'queued' and 'running' they were neither.  Loaded: no fifo.  Unloaded: they wait for it

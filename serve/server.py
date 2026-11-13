@@ -1978,54 +1978,62 @@ class StrataEngine:
         """A slot whose consumer left (a stop token, a stop string, a disconnect): BSTOP it and free it once the engine
         says BDONE (in the background).  `stream`: the prompt and every token of it so far - with the tokens still to
         come before BDONE, all but the last are what the slot holds then (the next turn of its conversation)."""
-        if slot >= len(self.slot_q):                    # the engine restarted with fewer slots: this one is gone
-            return
-        if born is not None and self.gen != born:       # #4451: the engine this slot belonged to is gone; BSTOP now would stop
-            return                                      # (and the wait below would read) a request of the NEW engine
-        born = self.gen if born is None else born
+        with self.slot_cv:
+            if slot >= len(self.slot_q):                # the engine restarted with fewer slots: this one is gone
+                return
+            if born is not None and self.gen != born:   # #4451: the engine this slot belonged to is gone; BSTOP now would stop
+                return                                  # (and the wait below would read) a request of the NEW engine
+            born = self.gen if born is None else born
+            self.__dict__.get("slot_parked", {}).pop(slot, None)
+            releasing = self.slot_releasing
+            releasing.add(slot)
+            self.slot_claims.discard(slot)
+            q, busy, held = self.slot_q[slot], self.slot_busy, self.slot_held   # this process's: restart() replaces them
         try:
             self._send(f"BSTOP {slot}")
         except EngineDied:
             pass
-        q, busy, held = self.slot_q[slot], self.slot_busy, self.slot_held   # this process's: restart() replaces them
-        releasing = self.slot_releasing
-        releasing.add(slot)
 
         def wait():
-            end = time.monotonic() + self.QUARANTINE_S      # no-progress limit: every line of the slot starts it again
-            tail = list(stream or [])
-            confirmed = False
-            while time.monotonic() < end:
-                try:
-                    line = q.get(timeout=5.0)
-                except queue.Empty:
-                    if self.gen != born or not self.alive():
-                        break
-                    continue
-                if line is None:
-                    tail = []
-                    break
-                end = time.monotonic() + self.QUARANTINE_S
-                if line.startswith("BT "):
+            try:
+                end = time.monotonic() + self.QUARANTINE_S  # no-progress limit: every line of the slot starts it again
+                tail = list(stream or [])
+                confirmed = False
+                while time.monotonic() < end:
                     try:
-                        tail.append(int(line.split()[2]))
-                    except (IndexError, ValueError):
+                        line = q.get(timeout=5.0)
+                    except queue.Empty:
+                        if self.gen != born or not self.alive():
+                            break
+                        continue
+                    if line is None:
                         tail = []
-                if line.startswith("BDONE "):
-                    confirmed = True
-                    if line.split()[3:4] == ["nonfinite"]:   # #879: the engine dropped the slot's state
-                        tail = []
-                    break
-            if not confirmed:
-                tail = []
-                # #4451: no BDONE in the quarantine from an engine that still runs: the slot is NOT handed on with its
-                # lines still to come - the engine is ended instead (a dead engine's slots are free by being gone)
-                self._end_out_of_step(born, "the engine did not end a stopped batch slot (BSTOP) in time")
-            held[slot] = tail[:-1] if stream and tail else []
-            with self.slot_cv:
-                busy[slot] = False
-                releasing.discard(slot)
-                self.slot_cv.notify_all()
+                        break
+                    end = time.monotonic() + self.QUARANTINE_S
+                    if line.startswith("BT "):
+                        try:
+                            tail.append(int(line.split()[2]))
+                        except (IndexError, ValueError):
+                            tail = []
+                    if line.startswith("BDONE "):
+                        confirmed = True
+                        if line.split()[3:4] == ["nonfinite"]:   # #879: the engine dropped the slot's state
+                            tail = []
+                        break
+                if not confirmed:
+                    tail = []
+                    # #4451: no BDONE in the quarantine from an engine that still runs: the slot is NOT handed on with its
+                    # lines still to come - the engine is ended instead (a dead engine's slots are free by being gone)
+                    self._end_out_of_step(born, "the engine did not end a stopped batch slot (BSTOP) in time")
+                held[slot] = tail[:-1] if stream and tail else []
+            except Exception:
+                held[slot] = []
+                raise
+            finally:
+                with self.slot_cv:
+                    busy[slot] = False
+                    releasing.discard(slot)
+                    self.slot_cv.notify_all()
         threading.Thread(target=wait, daemon=True).start()
 
     BGEN_REFUSALS_MAX = 6    # #1994: how often one request tries another slot after the engine refused a BGEN
@@ -2035,15 +2043,22 @@ class StrataEngine:
         """#1994: the engine refused a BGEN for `slot`.  Keep it busy here for SLOT_PARK_S (no request owns it), then
         give it back: the engine's view has caught up, or the next refusal parks it again."""
         with self.slot_cv:
+            born = self.gen
+            parked = self.__dict__.setdefault("slot_parked", {})
+            tok = self.__dict__.get("_park_seq", 0) + 1
+            self._park_seq = tok
             self.slot_claims.discard(slot)
             self.slot_busy[slot] = True
-        busy = self.slot_busy
+            parked[slot] = (born, tok)
+            busy = self.slot_busy
 
         def free():
             with self.slot_cv:
-                if slot not in self.slot_claims and slot not in self.slot_releasing:
-                    busy[slot] = False
-                self.slot_cv.notify_all()
+                if parked.get(slot) == (born, tok):
+                    parked.pop(slot, None)
+                    if self.gen == born and slot < len(busy) and slot not in self.slot_claims and slot not in self.slot_releasing:
+                        busy[slot] = False
+                    self.slot_cv.notify_all()
         t = threading.Timer(self.SLOT_PARK_S, free)
         t.daemon = True
         t.start()
@@ -2058,8 +2073,13 @@ class StrataEngine:
         owner registers is never taken."""
         now = time.monotonic()
         freed = []
+        parked = self.__dict__.get("slot_parked") or {}
         for b, busy in enumerate(self.slot_busy):
-            if busy and b not in self.slot_claims and b not in self.slot_releasing:
+            p = parked.get(b)
+            if p is not None and p[0] != self.gen:
+                parked.pop(b, None)
+                p = None
+            if busy and b not in self.slot_claims and b not in self.slot_releasing and p is None:
                 first = self._orphan_seen.setdefault(b, now)
                 if now - first >= self.ORPHAN_SLOT_S:
                     self.slot_busy[b] = False
@@ -2637,7 +2657,9 @@ class StrataEngine:
                     self.slot_held[slot] = []
                     stream = list(prompt) + out[gen0:] if gen0 is not None and len(out) > gen0 else None
                     self._release_slot_when_done(slot, stream, born)    # freed at its BDONE
-                    self.slot_claims.discard(slot)                # (the BDONE wait owns it now)
+                    with self.slot_cv:
+                        if self.gen == born:
+                            self.slot_claims.discard(slot)        # (the BDONE wait owns it now)
                 else:
                     with self.slot_cv:
                         self.slot_busy[slot] = False
