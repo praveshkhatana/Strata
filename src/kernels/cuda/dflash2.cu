@@ -1007,6 +1007,23 @@ static int df2_q4_auto(int rows) {
         return cudaGetDevice(&dev) == cudaSuccess && cudaGetDeviceProperties(&p, dev) == cudaSuccess && strata::kernels::gfx_arch_is_gfx12(p.gcnArchName);
     }();
     if (gfx12) return rows <= 640 ? 31 : 26;
+#else
+    // Ada AD102 (RTX 4090, sm_89 128 SMs): dflash2_gemm_bench q4 winner — var 20 (W=4,R=1,U=8) for small <=256 rows, var 31 (W=1,R=1,U=1) above.
+    static const bool ada_big = [] {
+        int dev = 0, maj = 0, mnr = 0, sms = 0;
+        if (cudaGetDevice(&dev) != cudaSuccess ||
+            cudaDeviceGetAttribute(&maj, cudaDevAttrComputeCapabilityMajor, dev) != cudaSuccess ||
+            cudaDeviceGetAttribute(&mnr, cudaDevAttrComputeCapabilityMinor, dev) != cudaSuccess ||
+            cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, dev) != cudaSuccess) {
+            cudaGetLastError();
+            return false;
+        }
+        return maj == 8 && mnr == 9 && sms >= 100;
+    }();
+    if (ada_big) {
+        if (rows <= 256 && rows % 32 == 0) return 20;
+        if (rows % 8 == 0) return 31;
+    }
 #endif
     (void) rows;
     return 17;

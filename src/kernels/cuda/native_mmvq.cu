@@ -3757,9 +3757,18 @@ constexpr IlRows58 kIlRows58_80[] = {   // CMP 170HX, as kIlRows_80
     {14, {{0, 0, 4, 2, 4}, {0, 0, 2, 2, 2}, {0, 2, 2, 2, 2}, {0, 0, 4, 2, 4}}},   // Q6_K
     {11, {{0, 0, 4, 2, 4}, {0, 0, 4, 1, 4}, {0, 0, 1, 1, 1}, {1, 1, 1, 1, 1}}},   // Q3_K
 };
+// RTX 4090 (sm_89, 128 SMs; il_cc key 8901): measured with mmvq_il_parity --bench --emit-table; bitwise equal.
+constexpr IlRows58 kIlRows58_8901[] = {
+    {23, {{0, 2, 2, 1, 2}, {0, 2, 2, 1, 2}, {0, 1, 2, 1, 1}, {0, 2, 1, 1, 1}}},   // IQ4_XS (4 runs as 2 at 5+ cols)
+    {12, {{0, 1, 1, 1, 1}, {0, 2, 2, 1, 1}, {0, 2, 2, 2, 2}, {0, 2, 2, 1, 1}}},   // Q4_K
+    {13, {{0, 1, 2, 1, 2}, {0, 2, 2, 1, 2}, {0, 2, 2, 2, 2}, {0, 2, 2, 1, 2}}},   // Q5_K
+    {14, {{0, 0, 2, 2, 2}, {0, 0, 2, 2, 2}, {0, 2, 2, 2, 2}, {0, 1, 2, 1, 2}}},   // Q6_K
+    {11, {{0, 2, 2, 2, 2}, {0, 0, 2, 2, 2}, {0, 0, 1, 1, 2}, {0, 1, 2, 2, 2}}},   // Q3_K
+};
 struct Il58Arch { int cc; const IlRows58* t; size_t n; };
 constexpr Il58Arch kIl58Arch[] = {
     {80, kIlRows58_80, sizeof(kIlRows58_80) / sizeof(IlRows58)},
+    {8901, kIlRows58_8901, sizeof(kIlRows58_8901) / sizeof(IlRows58)},   // Ada 100+ SMs (RTX 4090)
     {120, kIlRows58_120, sizeof(kIlRows58_120) / sizeof(IlRows58)},
     {1201, kIlRows58_120, sizeof(kIlRows58_120) / sizeof(IlRows58)},   // a 12.0 card with 80+ SMs (il_cc)
 };
@@ -3784,12 +3793,17 @@ constexpr Il1Rows kIl1Rows_80[] = {   // CMP 170HX, as kIlRows_80
     {13, {0, 0, 0, 4, 1}},   // Q5_K
     {11, {0, 0, 2, 2, 2}},   // Q3_K
 };
+constexpr Il1Rows kIl1Rows_8901[] = {   // RTX 4090 (sm_89, 128 SMs)
+    {23, {0, 0, 0, 0, 1}},   // IQ4_XS
+    {11, {0, 0, 0, 1, 1}},   // Q3_K
+};
 struct Il1Arch { int cc; const Il1Rows* t; size_t n; };
 constexpr Il1Arch kIl1Arch[] = {
     {80, kIl1Rows_80, sizeof(kIl1Rows_80) / sizeof(Il1Rows)},
     {61, kIl1Rows_61, sizeof(kIl1Rows_61) / sizeof(Il1Rows)},
     {86, kIl1Rows_86, sizeof(kIl1Rows_86) / sizeof(Il1Rows)},
     {89, kIl1Rows_89, sizeof(kIl1Rows_89) / sizeof(Il1Rows)},   // Ada: the RTX 4070 and 4080 agree
+    {8901, kIl1Rows_8901, sizeof(kIl1Rows_8901) / sizeof(Il1Rows)},   // Ada 100+ SMs (RTX 4090)
 };
 bool il_env_on(const char* name) {
     const char* v = std::getenv(name);
@@ -3805,6 +3819,26 @@ bool il_89_opt_in() {
     static const bool on = strata::mmvq_il_89_resolve(std::getenv("STRATA_MMVQ_IL_89"), false, 89, strata::qwen_defaults_026());
     return on;
 }
+// RTX 4090 (sm_89, 128 SMs; il_cc key 8901): measured with mmvq_il_parity --bench --emit-table --pf 0,3,4; bitwise equal.
+constexpr IlRows kIlRows_8901[] = {
+    {23, {{0, 0, 0, 0, 0}, {0, 1, 1, 1, 1}, {0, 1, 1, 1, 1}}},   // IQ4_XS
+    {12, {{0, 0, 4, 2, 2}, {0, 1, 1, 1, 1}, {0, 1, 1, 1, 1}}},   // Q4_K
+    {13, {{0, 0, 1, 1, 0}, {0, 0, 1, 1, 0}, {0, 1, 1, 1, 1}}},   // Q5_K
+    {14, {{0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 2, 1}}},   // Q6_K
+    {11, {{0, 1, 1, 1, 2}, {0, 1, 2, 1, 1}, {0, 1, 2, 1, 1}}},   // Q3_K
+};
+constexpr IlPf kIlPf_8901[] = {   // HAS_PF types only (Q3_K HAS_PF=false keeps kIlRows_8901)
+    {23, {{0x00, 0x00, 0x00, 0x00, 0x00}, {0x00, 0x41, 0x01, 0x41, 0x41}, {0x31, 0x41, 0x01, 0x41, 0x41}}},   // IQ4_XS
+    {12, {{0x00, 0x00, 0x04, 0x02, 0x02}, {0x00, 0x01, 0x01, 0x01, 0x01}, {0x00, 0x41, 0x01, 0x01, 0x01}}},   // Q4_K
+    {13, {{0x00, 0x00, 0x01, 0x01, 0x00}, {0x00, 0x00, 0x01, 0x01, 0x00}, {0x00, 0x01, 0x01, 0x01, 0x01}}},   // Q5_K
+    {14, {{0x32, 0x31, 0x00, 0x00, 0x00}, {0x00, 0x41, 0x31, 0x00, 0x41}, {0x31, 0x41, 0x31, 0x31, 0x31}}},   // Q6_K
+};
+constexpr IlPf58 kIlPf58_8901[] = {   // 5-8 columns (rows 4 runs as 2 in launch_il_rows)
+    {23, {{0x00, 0x42, 0x32, 0x01, 0x32}, {0x00, 0x02, 0x31, 0x31, 0x31}, {0x00, 0x01, 0x02, 0x01, 0x01}, {0x00, 0x41, 0x31, 0x01, 0x01}}},   // IQ4_XS
+    {12, {{0x00, 0x41, 0x01, 0x01, 0x01}, {0x00, 0x41, 0x02, 0x01, 0x01}, {0x00, 0x02, 0x02, 0x02, 0x02}, {0x00, 0x02, 0x02, 0x01, 0x01}}},   // Q4_K
+    {13, {{0x00, 0x01, 0x02, 0x01, 0x02}, {0x00, 0x02, 0x02, 0x01, 0x02}, {0x00, 0x02, 0x02, 0x02, 0x02}, {0x00, 0x41, 0x02, 0x01, 0x02}}},   // Q5_K
+    {14, {{0x00, 0x41, 0x31, 0x31, 0x31}, {0x00, 0x41, 0x31, 0x31, 0x02}, {0x00, 0x41, 0x31, 0x02, 0x02}, {0x00, 0x41, 0x31, 0x41, 0x02}}},   // Q6_K
+};
 struct IlArch { int cc; const IlRows* t; size_t n; };
 constexpr IlArch kIlArch[] = {
     {60, kIlRows_60, sizeof(kIlRows_60) / sizeof(IlRows)},   // Pascal GP100: measured on a Tesla P100
@@ -3814,6 +3848,7 @@ constexpr IlArch kIlArch[] = {
     {80, kIlRows_80, sizeof(kIlRows_80) / sizeof(IlRows)},   // sm_80: measured on a CMP 170HX
     {86, kIlRows_86, sizeof(kIlRows_86) / sizeof(IlRows)},   // 143-dense: RTX A4000 with the real shapes (Q3_K added)
     {89, kIlRows_89, sizeof(kIlRows_89) / sizeof(IlRows)},   // Ada: the cells where an RTX 4070 and an RTX 4080 agree
+    {8901, kIlRows_8901, sizeof(kIlRows_8901) / sizeof(IlRows)},   // Ada 100+ SMs (RTX 4090)
     // 147-verify: RTX PRO 5000 Blackwell (110 SMs).  Only 12.0 cards with 80+ SMs (il_cc's 1201) take it: the shared table
     // was measured on an RTX 5070 (48 SMs) and stays that card's
     {1201, kIlRows_120, sizeof(kIlRows_120) / sizeof(IlRows)},
@@ -3900,6 +3935,10 @@ int il_cc() {
         int sms = 0;
         if (cc[dev] == 120 && cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, dev) == cudaSuccess && sms >= 80)
             cc[dev] = 1201;
+        // Ada 100+ SMs (RTX 4090: 128 SMs) answers 8901 (STRATA_MMVQ_IL_8901=0 keeps 89 for A/B)
+        if (cc[dev] == 89 && il_env_on("STRATA_MMVQ_IL_8901") &&
+            cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, dev) == cudaSuccess && sms >= 100)
+            cc[dev] = 8901;
         // STRATA_MMVQ_IL_SM80=0: an sm_80 card takes the shared table as before kIlRows_80 (A/B)
         if (cc[dev] == 80 && !strata::sm80_default_on(std::getenv("STRATA_MMVQ_IL_SM80"), strata::qwen_defaults_026())) cc[dev] = 81;   // =0 or STRATA_DEFAULTS=026
         cudaGetLastError();
@@ -3908,14 +3947,19 @@ int il_cc() {
 }
 int il_rows(int type, int ncols, int n_out) { return native_mmvq_il_rows_for(il_cc(), type, ncols, n_out); }
 int il_pf_table(int type, int ncols, int n_out) {
-    if (il_cc() != 80 || ncols < 2 || ncols > 8) return 0;   // only the CMP 170HX measured one
+    const int cur = il_cc();
+    if ((cur != 80 && cur != 8901) || ncols < 2 || ncols > 8) return 0;
     const int cls = n_out < 2048 ? 0 : n_out < 4096 ? 1 : n_out < 8192 ? 2 : n_out < 12288 ? 3 : 4;
     if (ncols <= 4) {
-        for (const IlPf& t : kIlPf_80)
-            if (t.type == type) return t.v[ncols - 2][cls];
+        const IlPf* tbl = cur == 8901 ? kIlPf_8901 : kIlPf_80;
+        const size_t n = cur == 8901 ? sizeof(kIlPf_8901) / sizeof(IlPf) : sizeof(kIlPf_80) / sizeof(IlPf);
+        for (size_t i = 0; i < n; ++i)
+            if (tbl[i].type == type) return tbl[i].v[ncols - 2][cls];
     } else {
-        for (const IlPf58& t : kIlPf58_80)
-            if (t.type == type) return t.v[ncols - 5][cls];
+        const IlPf58* tbl = cur == 8901 ? kIlPf58_8901 : kIlPf58_80;
+        const size_t n = cur == 8901 ? sizeof(kIlPf58_8901) / sizeof(IlPf58) : sizeof(kIlPf58_80) / sizeof(IlPf58);
+        for (size_t i = 0; i < n; ++i)
+            if (tbl[i].type == type) return tbl[i].v[ncols - 5][cls];
     }
     return 0;
 }
@@ -3955,8 +3999,15 @@ bool il_arch_ok() {
 
 bool native_mmvq_il_supported(int ggml_type, int ncols, int n_out) {
     if (ncols < 1 || ncols > 8 || !g_multi_exact || !il_arch_ok()) return false;
-    return (g_tune_rows ? g_tune_rows : il_rows(ggml_type, ncols, n_out)) != 0 &&
-           (ggml_type == 23 || ggml_type == 12 || ggml_type == 13 || ggml_type == 14 || ggml_type == 11);
+    if (ggml_type != 23 && ggml_type != 12 && ggml_type != 13 && ggml_type != 14 && ggml_type != 11) return false;
+    if (g_tune_rows) return true;
+    if (il_rows(ggml_type, ncols, n_out) != 0) return true;
+    if (ncols > 1 && ggml_type != 11) {
+        int pf_rows = 0;
+        const int pf = il_pf_for(ggml_type, ncols, n_out, &pf_rows);
+        return pf > 0 && pf_rows != 0;
+    }
+    return false;
 }
 
 void native_mmvq_il(int ggml_type, const void* weights, const void* x_q8_1, const void* x_il, float* y, int n_in,

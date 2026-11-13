@@ -1140,10 +1140,18 @@ def apply(cfg: dict[str, Any], *, klass: str = "other", data_dir: str | Path | N
     mine = cfg.get("user_args") or []
     pack = None
     if decision.drafter == "dflash2":
+        explicit_pack = _flag_value(args, "--draft-model")
+        variant = tuned_variant(backend, cfg.get("model_name"))
+        tpath = tuned_path(data_dir, variant)
         qualifies = tuned_applies(backend, cfg.get("model_name"), archs, args=strip_mtp_flags(strip_draft_flags(args)), vram_mib=vram_mib)
         pack = pack_path(data_dir, engine, model_name=cfg.get("model_name"), backend=backend, tuned=qualifies)
-        if Path(pack) != tuned_path(data_dir, tuned_variant(backend, cfg.get("model_name"))) and not pack_ready(data_dir):         # (only the tuned pack is here and this engine cannot read it: no drafter file for it)
-            decision = Decision(decision.asked, "mtp", NOT_DOWNLOADED) if mtp_here is not False else Decision(decision.asked, "off", NONE_HERE)
+        if Path(pack) != tpath and not pack_ready(data_dir):         # no stock pack on disk: keep explicit --draft-model or verified tuned pack if the engine reads it
+            if explicit_pack and Path(explicit_pack).is_file() and (Path(explicit_pack) != tpath or engine is None or engine_reads_selector_q4(engine)):
+                pack = Path(explicit_pack)
+            elif uses_tuned(backend, cfg.get("model_name")) and tuned_ok(data_dir, variant) and (engine is None or engine_reads_selector_q4(engine)):
+                pack = tpath
+            else:
+                decision = Decision(decision.asked, "mtp", NOT_DOWNLOADED) if mtp_here is not False else Decision(decision.asked, "off", NONE_HERE)
     if decision.drafter == "off":
         cfg["args"] = strip_mtp_flags(strip_draft_flags(args))
         cfg["mtp"] = False
