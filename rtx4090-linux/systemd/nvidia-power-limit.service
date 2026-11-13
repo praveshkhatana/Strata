@@ -1,0 +1,11 @@
+[Unit]
+Description=Set NVIDIA GPU Power Limit to 410W
+After=nvidia-persistenced.service multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'if [ -x /usr/bin/nvidia-smi ] && /usr/bin/nvidia-smi >/dev/null 2>&1; then /usr/bin/nvidia-smi -pl 410; fi'
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

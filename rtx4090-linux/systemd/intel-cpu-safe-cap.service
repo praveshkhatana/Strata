@@ -1,0 +1,12 @@
+[Unit]
+Description=Cap i9-14900K P-Cores to 4.8 GHz crash-proof ceiling and set performance EPP
+After=power-profiles-daemon.service
+Wants=power-profiles-daemon.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'if command -v powerprofilesctl >/dev/null 2>&1; then powerprofilesctl set performance || true; fi; for c in /sys/devices/system/cpu/cpu[0-9]/cpufreq /sys/devices/system/cpu/cpu1[0-5]/cpufreq; do [ -w "$c/scaling_max_freq" ] && echo 4800000 > "$c/scaling_max_freq"; [ -w "$c/energy_performance_preference" ] && echo performance > "$c/energy_performance_preference" || true; done; for c in /sys/devices/system/cpu/cpu1[6-9]/cpufreq /sys/devices/system/cpu/cpu2[0-9]/cpufreq /sys/devices/system/cpu/cpu3[0-1]/cpufreq; do [ -w "$c/scaling_max_freq" ] && echo 4400000 > "$c/scaling_max_freq" || true; [ -w "$c/energy_performance_preference" ] && echo performance > "$c/energy_performance_preference" || true; done'
+
+[Install]
+WantedBy=multi-user.target
